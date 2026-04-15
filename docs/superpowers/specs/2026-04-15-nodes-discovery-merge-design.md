@@ -48,7 +48,7 @@ Two independent data-gathering paths, a single pure merge function, one rendered
 - **`dotori-core::types`** — `NodeInfo` gains source tracking fields.
 - **`dotori-tui::app`** — holds `admin_nodes` and `scout_nodes` separately; computes `nodes` (merged) on each update.
 - **`dotori-tui::lib`** — spawns admin polling task and scout task; wires `AppEvent` handling.
-- **`dotori-tui::event`** — adds `AdminNodes`, `ScoutStarted`, `ScoutNodes` variants; handles `s` key in Nodes view.
+- **`dotori-tui::event`** — adds `AdminNodes`, `ScoutStarted`, `ScoutNodes` variants; exposes the sender via a new `EventHandler::sender()` accessor so background tasks in `lib.rs` can emit events; handles `s` key in Nodes view.
 - **`dotori-tui::views::nodes`** — renders new 4-column layout with Source column and footer counts.
 
 ## Data Model
@@ -116,7 +116,7 @@ Replaces the existing `list_nodes()` function. Steps:
 4. Emit one `NodeInfo` per entry in `sessions[]`:
    - `zid = sessions[i].peer`
    - `kind = sessions[i].whatami`
-   - `locators = sessions[i].links[].dst` collected into a Vec (may be empty)
+   - `locators = Vec::new()` — transport link endpoints (`sessions[i].links[].dst`) are **not** used here. Per Non-Goals, those belong in a future Detail view. Peer/client rows will simply show an empty Locators column for admin-derived entries unless scout also discovers them and contributes scout-advertised locators during merge.
 5. Query `@/**` to include the local session's own admin data (so the current peer appears in the list).
 6. Deduplicate by `zid` — on collision, take union of `locators` and keep the first-seen `kind`/`metadata`.
 7. Tag every emitted node with `sources = NodeSources::ADMIN` and `admin_last_seen = Some(now)`.
@@ -189,7 +189,47 @@ ScoutStarted,
 ScoutNodes(Vec<NodeInfo>),
 ```
 
+### `EventHandler` sender exposure (`dotori-tui/src/event.rs`)
+
+Today, the `AppEvent` sender is created inside `EventHandler::new()` and moved into the spawned input/zenoh tasks — there is no way for `lib.rs` to obtain a clone. The admin polling and scout tasks in this design require a sender from outside the event handler, so `EventHandler::new()` must expose it.
+
+**Change**: `EventHandler` stores the sender as a struct field and exposes a `sender()` accessor:
+
+```rust
+pub struct EventHandler {
+    tx: mpsc::UnboundedSender<AppEvent>,        // NEW: retained for external cloning
+    rx: mpsc::UnboundedReceiver<AppEvent>,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl EventHandler {
+    pub fn new(tick_rate_ms: u64, zenoh_rx: mpsc::UnboundedReceiver<ZenohMessage>) -> Self {
+        let (tx, rx) = mpsc::unbounded_channel();
+        // ... existing zenoh-forwarding task uses tx.clone() ...
+        // ... existing key/tick task uses tx.clone() (the clone moves into the task; the
+        //     original `tx` is now stored in the struct instead of being dropped) ...
+        Self { tx, rx, _task: task }
+    }
+
+    pub fn sender(&self) -> mpsc::UnboundedSender<AppEvent> {
+        self.tx.clone()
+    }
+
+    // existing `next()` unchanged
+}
+```
+
+`run_loop` in `lib.rs` calls `events.sender()` once after constructing `EventHandler`, then passes clones of the returned sender into each background task (admin polling + scout trigger helper).
+
+**Note on the existing internal clones**: the existing code moves `tx` into both spawned tasks inside `EventHandler::new`. That pattern works because each spawned task needs to own its clone. The patch is to clone first (for the internal tasks) **and then store the original in `self.tx`** rather than letting it drop at the end of `new()`. No behavior change for existing senders — only the sender's lifetime is extended.
+
 ### Background tasks (`dotori-tui/src/lib.rs`)
+
+Before spawning the tasks below, `run_loop` grabs the sender once:
+
+```rust
+let tx = events.sender();
+```
 
 **Admin polling task** — spawned once on startup with a connected session:
 
@@ -200,13 +240,22 @@ tokio::spawn(async move {
     let mut ticker = tokio::time::interval(Duration::from_secs(2));
     loop {
         ticker.tick().await;
-        let nodes = query_admin_nodes(&session_a).await.unwrap_or_default();
-        if admin_tx.send(AppEvent::AdminNodes(nodes)).is_err() { break; }
+        match query_admin_nodes(&session_a).await {
+            Ok(nodes) => {
+                if admin_tx.send(AppEvent::AdminNodes(nodes)).is_err() {
+                    break;
+                }
+            }
+            Err(e) => {
+                tracing::warn!("admin query failed: {e}");
+                // Do not send — preserve previous admin_nodes snapshot.
+            }
+        }
     }
 });
 ```
 
-`tokio::time::interval`'s first tick fires immediately, so the first Nodes view render is already populated without needing a separate eager call.
+`tokio::time::interval`'s first tick fires immediately, so the first Nodes view render is already populated without needing a separate eager call. On a transient query error, the task logs and **skips** the send, preserving the previous `admin_nodes` state in `App` (matching the Error Handling section below).
 
 **Startup scout task** — spawned once on startup:
 
