@@ -18,7 +18,18 @@
 - Commit messages: `feat(mcp):`, `test(mcp):`, `chore:`.
 - Reuse the resolved config from `zemon_core::config::resolve_config` (do not re-read env ad hoc).
 
-**rmcp API note (verify in Task 1):** rmcp's surface has minor naming variance across 0.x releases (e.g. `Content::text` vs `ContentBlock::text`, `CallToolResult::success`). Task 1 pins the exact resolved version and confirms the real names against a compiling hello-world; all later tasks follow the pattern Task 1 establishes. If a name below differs from the resolved crate, prefer the crate's actual name and keep the structure identical.
+**rmcp API note (verify in Task 1 — REQUIRED):** rmcp resolves to **2.2.0**, whose exact
+API may differ from the code sketches below (which follow the older 0.16-era README).
+The code in this plan encodes the *structure* (a server struct with `#[tool]` methods, a
+`ToolRouter`, a `#[tool_handler] impl ServerHandler`, and `serve(stdio())`), not guaranteed
+symbol names. **The authoritative source is the installed crate's own examples**: after
+`cargo add`, read `~/.cargo/registry/src/*/rmcp-2.2.0/examples/` (and `src/` for exact
+signatures) and copy the real v2 patterns for: the tool router/handler macros, the
+`Parameters<T>` wrapper, `CallToolResult` success construction, the text-content constructor
+(`Content::text` vs `ContentBlock::text`), the stdio transport entry point, and the
+`ErrorData`/`McpError` constructors. Task 1 pins these against a compiling hello-world; every
+later task follows the exact pattern Task 1 establishes. Where a name below differs from the
+resolved crate, the crate wins — keep the structure identical.
 
 ---
 
@@ -85,7 +96,9 @@ edition = "2021"
 
 [dependencies]
 zemon-core = { path = "../zemon-core" }
-rmcp = { version = "0.16", features = ["server", "macros", "transport-io"] }
+# rmcp resolves to 2.x (confirmed 2.2.0). The `server` feature pulls in the tool
+# macros and stdio transport in this line's feature set.
+rmcp = { version = "2", features = ["server", "macros", "transport-io"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
