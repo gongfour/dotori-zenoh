@@ -4,7 +4,7 @@
 
 **Goal:** Add a `zemon-mcp` library crate and a `zemon mcp` subcommand that serve the zemon monitoring surface to AI agents as an MCP (Model Context Protocol) server over stdio.
 
-**Architecture:** A thin `rmcp`-based adapter over `zemon-core`. Each MCP tool delegates to a small, testable handler function returning `Result<String, ZemonError>` (a JSON string), which the `#[tool]` method wraps into an MCP result. A single lazily-opened, reconnecting Zenoh session (held in `ServerState`) is reused across calls. The `zemon mcp` subcommand resolves config via the existing `resolve_config` and runs the server.
+**Architecture:** A thin `rmcp`-based adapter over `zemon-core`. Each MCP tool delegates to a small, testable handler function returning `Result<String, ZemonError>` (a JSON string), which the `#[tool]` method wraps into an MCP result. A single lazily-opened Zenoh session (held in `ServerState`) is reused across calls; the cache is invalidated (reopens on next call) on explicit connection-kind errors, with full mid-session auto-recovery deferred (see the design spec's *Out of scope*). The `zemon mcp` subcommand resolves config via the existing `resolve_config` and runs the server.
 
 **Tech Stack:** Rust, tokio, `rmcp` + `rmcp-macros` (official Rust MCP SDK), `serde`/`serde_json`, `schemars`, `zenoh` (via `zemon-core`).
 

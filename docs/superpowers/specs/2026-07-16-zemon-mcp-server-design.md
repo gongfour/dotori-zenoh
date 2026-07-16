@@ -32,8 +32,12 @@ mode.
    after plan approval.
 2. **Streaming boundary:** bounded-snapshot tools. `sub`/`nodes watch` become finite tools
    that collect for `count`/`duration` then return a batch. No server-push streaming in v1.
-3. **Session model:** one persistent, lazily-initialized, reconnecting Zenoh session reused
-   across all tool calls (the server binds to a single network for its lifetime).
+3. **Session model:** one persistent, lazily-initialized Zenoh session reused across all
+   tool calls (the server binds to a single network for its lifetime). The cache can be
+   invalidated so the next call reopens; in v1 that fires on explicit connection-kind
+   errors (e.g. the initial open failing). Auto-recovery from a *silent mid-session* drop
+   is best-effort and deferred — see *Out of scope* — because core query paths do not always
+   report such drops as connection-kind errors; restarting the server always reopens cleanly.
 4. **Tool set:** read-only tools + `pub` (test injection). Excludes `queryable serve`,
    `capture`/`replay`, `tui`.
 5. **Packaging:** a `zemon-mcp` **library** crate (the adapter) driven by a new
@@ -62,11 +66,12 @@ crates/
 
 ### Components (`zemon-mcp`)
 
-- **`ServerState`** — holds the resolved `ZemonConfig` and a lazily-opened, reconnecting
-  session: `Arc<Mutex<Option<Session>>>`. A `session()` accessor opens the session on first
-  use and re-opens it if a prior call observed a dropped connection (mirrors the TUI's
-  non-blocking reconnection pattern; network calls never block the protocol loop
-  indefinitely — each tool honors its own timeout).
+- **`ServerState`** — holds the resolved `ZemonConfig` and a lazily-opened session:
+  `Arc<Mutex<Option<Session>>>`. A `session()` accessor opens the session on first use and
+  reuses it; `invalidate_session()` clears the cache so the next call reopens, which tool
+  handlers trigger on an explicit connection-kind error. (Full auto-recovery from a silent
+  mid-session drop is deferred — see *Out of scope*.) Network calls never block the protocol
+  loop indefinitely — each tool honors its own timeout.
 - **Tool handlers** — one thin async fn per tool. Each obtains `state.session()` (except the
   pure tools), calls the corresponding `zemon-core` function, and returns a value serialized
   with the **same serde types the CLI uses** (e.g. `output::to_collection_json`,
@@ -157,6 +162,9 @@ view (allow-listed; no raw Zenoh config / secrets).
 ## Out of scope (v1)
 
 - Server-push / live streaming via MCP resource subscriptions.
+- Auto-recovery from a silent mid-session connection drop (needs core query paths to preserve
+  connection-kind through their `color_eyre` errors; v1 reopens only on explicit
+  connection-kind errors, and a server restart always reopens cleanly).
 - `queryable serve`, `capture`, `replay`, `tui` tools.
 - Multi-network / per-call endpoint switching (the server binds one network per process).
 - HTTP/SSE transport (stdio only).
